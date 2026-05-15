@@ -2,13 +2,13 @@ name: sync-pingdongyi_submodule_update
 
 on:
   schedule:
-    - cron: '0 14 * * *'          # 每天北京时间 22:00 执行
+    - cron: '0 10 * * *'          # 每天北京时间 18:00 执行
   workflow_dispatch:               # 允许手动触发
 
 permissions:
-  contents: write                  # 允许推送和强制推送
+  contents: write
   pull-requests: write
-  issues: write   
+  issues: write
 
 jobs:
   sync:
@@ -24,10 +24,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      # ========== 同步跟踪分支（保留 .github 工作流）==========
       - name: 同步跟踪分支到上游（保留 .github）
         run: |
-          # 从仓库变量中读取上游信息（变量未配置时会报错退出）
           UPSTREAM_URL="${{ vars.UPSTREAM_URL }}"
           UPSTREAM_BRANCH="${{ vars.UPSTREAM_BRANCH }}"
           if [ -z "$UPSTREAM_URL" ] || [ -z "$UPSTREAM_BRANCH" ]; then
@@ -38,14 +36,10 @@ jobs:
 
           git remote add upstream "$UPSTREAM_URL" || true
           git fetch upstream
-          git checkout "$UPSTREAM_BRANCH"
+          git checkout -B "$UPSTREAM_BRANCH" "upstream/$UPSTREAM_BRANCH"
 
-          # 备份并还原 .github 目录，防止工作流文件被上游覆盖
           cp -r .github /tmp/github_backup 2>/dev/null || true
-          git reset --hard "upstream/$UPSTREAM_BRANCH"
-
           if [ -d "/tmp/github_backup" ]; then
-            # 先清空上游带来的 .github，再用备份覆盖
             rm -rf .github
             cp -r /tmp/github_backup .github
             rm -rf /tmp/github_backup
@@ -59,7 +53,6 @@ jobs:
           git push origin "$UPSTREAM_BRANCH" --force-with-lease
           echo "✅ 跟踪分支已同步，.github 目录已保留"
 
-      # ========== 变基 packages 到最新跟踪分支 ==========
       - name: 变基 packages 到跟踪分支
         id: rebase_packages
         run: |
@@ -72,7 +65,6 @@ jobs:
           }
 
           BEFORE_REBASE=$(git rev-parse HEAD)
-
           if git rebase "$UPSTREAM_BRANCH"; then
             AFTER_REBASE=$(git rev-parse HEAD)
             if [ "$BEFORE_REBASE" != "$AFTER_REBASE" ]; then
@@ -89,7 +81,6 @@ jobs:
             echo "STATUS=conflict" >> $GITHUB_OUTPUT
           fi
 
-      # ========== 冲突时创建 PR（按文件独立版 - 最终可靠版）==========
       - name: 冲突处理 - 创建 PR
         if: steps.rebase_packages.outputs.STATUS == 'conflict'
         run: |
@@ -97,7 +88,6 @@ jobs:
           git fetch origin packages
           git checkout -B packages origin/packages
 
-          # 检测冲突文件列表（排除 .github 目录）
           git merge "$UPSTREAM_BRANCH" --no-commit --no-ff || true
           CURRENT_CONFLICT_FILES=$(git diff --name-only --diff-filter=U 2>/dev/null | grep -v '^.github/' | sort)
           git merge --abort 2>/dev/null || git reset --hard HEAD 2>/dev/null || true
@@ -107,7 +97,6 @@ jobs:
             exit 0
           fi
 
-          # 收集已存在 PR 中的冲突文件，避免重复创建
           declare -A EXISTING_PR_FILES
           EXISTING_PR_NUMBERS=$(gh pr list --base packages --state open --label conflict --json number --jq '.[].number' 2>/dev/null)
           for PR_NUM in $EXISTING_PR_NUMBERS; do
@@ -128,7 +117,6 @@ jobs:
             CONFLICT_BRANCH="conflict/${SAFE_NAME}-$(date +%Y%m%d-%H%M%S)"
             git checkout -b "$CONFLICT_BRANCH" packages
 
-            # 直接从跟踪分支取出该文件的最新版本，模拟冲突后的提交
             git checkout "$UPSTREAM_BRANCH" -- "$CONFLICT_FILE"
             git add "$CONFLICT_FILE"
             git commit -m "⚠️ 冲突: $CONFLICT_FILE"
@@ -165,5 +153,4 @@ jobs:
             echo "ℹ️ 所有当前冲突文件已在已有 PR 中，跳过"
           fi
         env:
-          # 优先使用个人令牌，避免权限问题
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
